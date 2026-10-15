@@ -5,6 +5,7 @@ Pacotes para melhorar o desempenho de jogos no PC. Cada jogo tem a própria past
 | Jogo | Pasta | O que melhora |
 |---|---|---|
 | Silent Hill 2 (Remake, 2024) | [`silent-hill-2-remake/`](silent-hill-2-remake/) | Travadas (*stutter*) ao andar pela cidade e guia de configurações para ganhar FPS |
+| Silent Hill: Townfall (2026) | [`silent-hill-townfall/`](silent-hill-townfall/) | Guia de configurações para ganhar FPS, ajustes de VRAM e memória, e teste para saber se o jogo lê o `Engine.ini` |
 
 ## Antes de usar qualquer pacote
 
