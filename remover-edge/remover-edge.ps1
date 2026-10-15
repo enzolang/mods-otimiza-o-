@@ -16,28 +16,36 @@
 #   - apagar o Edge Update, os servicos, tarefas ou pastas EdgeCore/EdgeWebView;
 #   - mexer em pacotes Appx, WinSxS, regiao do Windows ou arquivos do System32;
 #   - baixar ou rodar programas de terceiros.
+#
+# Toda mudanca temporaria e anotada ANTES de ser feita, na chave
+# HKLM\SOFTWARE\RemoverEdge. Se a janela for fechada no meio, a proxima
+# execucao (ou o reinstalar-edge.bat) desfaz o que ficou pendente.
 
 param([switch]$Recuperar)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 
-$EdgeGuid    = '{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}'
 $WebViewGuid = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
 $ProgX86     = ${env:ProgramFiles(x86)}
 $UninstKey   = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Microsoft Edge'
 $DevKey      = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdateDev'
+$SrKey       = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
 $StubDir     = Join-Path $env:SystemRoot 'SystemApps\Microsoft.MicrosoftEdge_8wekyb3d8bbwe'
 $StubFile    = Join-Path $StubDir 'MicrosoftEdge.exe'
-$StateDir    = Join-Path $env:ProgramData 'RemoverEdge'
-$StateFile   = Join-Path $StateDir 'estado.txt'
+$StateKey    = 'HKLM:\SOFTWARE\RemoverEdge'
 $Desktop     = [Environment]::GetFolderPath('Desktop')
-$LogFile     = Join-Path $Desktop 'RemoverEdge-log.txt'
+$script:LogFile = Join-Path $Desktop 'RemoverEdge-log.txt'
 $RestoreDesc = 'Antes de remover o Microsoft Edge'
 
 function Write-Log([string]$Text) {
     $line = '[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Text
-    try { Add-Content -LiteralPath $LogFile -Value $line -Encoding UTF8 } catch { }
+    try { Add-Content -LiteralPath $script:LogFile -Value $line -Encoding UTF8 }
+    catch {
+        # Ex.: "Acesso a pastas controladas" do Defender bloqueia a Area de Trabalho.
+        $script:LogFile = Join-Path $env:ProgramData 'RemoverEdge-log.txt'
+        try { Add-Content -LiteralPath $script:LogFile -Value $line -Encoding UTF8 } catch { }
+    }
 }
 
 function Say([string]$Text, [string]$Color = 'Gray') {
@@ -64,47 +72,81 @@ function Get-WebView2Version {
 }
 
 # ---------------------------------------------------------------------
-# Estado dos destravamentos. Cada mudanca e anotada ANTES de ser feita,
-# entao mesmo se a janela for fechada no meio, a proxima execucao (ou o
-# reinstalar-edge.bat) desfaz tudo.
+# Estado das mudancas temporarias (HKLM\SOFTWARE\RemoverEdge, so
+# administradores podem escrever ali).
 # ---------------------------------------------------------------------
-function Save-State([hashtable]$State) {
-    New-Item -ItemType Directory -Path $StateDir -Force | Out-Null
-    $lines = foreach ($key in $State.Keys) { '{0}={1}' -f $key, $State[$key] }
-    Set-Content -LiteralPath $StateFile -Value $lines -Encoding ASCII
+function Set-StateFlag([string]$Name, [string]$Value) {
+    if (-not (Test-Path -Path $StateKey)) { New-Item -Path $StateKey -Force | Out-Null }
+    New-ItemProperty -Path $StateKey -Name $Name -Value $Value -PropertyType String -Force | Out-Null
 }
 
+function Get-StateFlag([string]$Name) {
+    $p = Get-ItemProperty -Path $StateKey -Name $Name -ErrorAction SilentlyContinue
+    if ($null -eq $p) { return $null }
+    return [string]$p.$Name
+}
+
+function Clear-StateFlag([string]$Name) {
+    if ($null -ne (Get-StateFlag $Name)) { Remove-ItemProperty -Path $StateKey -Name $Name }
+}
+
+# Devolve $true se nao sobrou nada pendente.
 function Undo-Unlock {
-    if (-not (Test-Path -LiteralPath $StateFile)) { return }
-    $s = @{}
-    foreach ($line in (Get-Content -LiteralPath $StateFile)) {
-        $i = $line.IndexOf('=')
-        if ($i -gt 0) { $s[$line.Substring(0, $i)] = $line.Substring($i + 1) }
-    }
+    if (-not (Test-Path -Path $StateKey)) { return $true }
     $ok = $true
 
-    if ($s.ContainsKey('StubArquivoCriado') -and $s['StubArquivoCriado'] -eq '1') {
+    # Frequencia dos pontos de restauracao.
+    $freq = Get-StateFlag 'FrequenciaOriginal'
+    if ($null -ne $freq) {
         try {
-            if (Test-Path -LiteralPath $StubFile) { Remove-Item -LiteralPath $StubFile -Force }
-            Write-Log 'Desfeito: arquivo vazio MicrosoftEdge.exe apagado.'
+            if ($freq -eq 'ausente') {
+                if (Get-ItemProperty -Path $SrKey -Name 'SystemRestorePointCreationFrequency' -ErrorAction SilentlyContinue) {
+                    Remove-ItemProperty -Path $SrKey -Name 'SystemRestorePointCreationFrequency'
+                }
+            } else {
+                Set-ItemProperty -Path $SrKey -Name 'SystemRestorePointCreationFrequency' -Value ([int]$freq) -Type DWord
+            }
+            Clear-StateFlag 'FrequenciaOriginal'
+            Write-Log "Desfeito: SystemRestorePointCreationFrequency voltou para '$freq'."
+        } catch { $ok = $false; Write-Log "Falha ao restaurar SystemRestorePointCreationFrequency: $_" }
+    }
+
+    # Arquivo vazio: so apaga se ainda estiver vazio (nunca um arquivo real).
+    if ((Get-StateFlag 'StubArquivoCriado') -eq '1') {
+        try {
+            $f = Get-Item -LiteralPath $StubFile -Force -ErrorAction SilentlyContinue
+            if ($null -ne $f -and $f.Length -eq 0) {
+                Remove-Item -LiteralPath $StubFile -Force
+                Write-Log 'Desfeito: arquivo vazio MicrosoftEdge.exe apagado.'
+            } elseif ($null -ne $f) {
+                Write-Log 'MicrosoftEdge.exe nao esta vazio (nao e o do script); NAO foi apagado.'
+            }
+            Clear-StateFlag 'StubArquivoCriado'
         } catch { $ok = $false; Write-Log "Falha ao apagar o arquivo vazio: $_" }
     }
-    if ($s.ContainsKey('StubPastaCriada') -and $s['StubPastaCriada'] -eq '1') {
+
+    # Pasta: so apaga se foi criada pelo script e esta vazia.
+    if ((Get-StateFlag 'StubPastaCriada') -eq '1') {
         try {
-            if ((Test-Path -LiteralPath $StubDir) -and
-                -not (Get-ChildItem -LiteralPath $StubDir -Force)) {
+            if ((Test-Path -LiteralPath $StubDir) -and -not (Get-ChildItem -LiteralPath $StubDir -Force)) {
                 Remove-Item -LiteralPath $StubDir -Force
                 Write-Log 'Desfeito: pasta criada pelo script apagada.'
             }
+            Clear-StateFlag 'StubPastaCriada'
         } catch { $ok = $false; Write-Log "Falha ao apagar a pasta criada: $_" }
     }
-    if ($s.ContainsKey('AllowUninstallCriado') -and $s['AllowUninstallCriado'] -eq '1') {
+
+    if ((Get-StateFlag 'AllowUninstallCriado') -eq '1') {
         try {
-            Remove-ItemProperty -Path $DevKey -Name 'AllowUninstall' -ErrorAction SilentlyContinue
+            if (Get-ItemProperty -Path $DevKey -Name 'AllowUninstall' -ErrorAction SilentlyContinue) {
+                Remove-ItemProperty -Path $DevKey -Name 'AllowUninstall'
+            }
+            Clear-StateFlag 'AllowUninstallCriado'
             Write-Log 'Desfeito: valor AllowUninstall apagado.'
         } catch { $ok = $false; Write-Log "Falha ao apagar AllowUninstall: $_" }
     }
-    if ($s.ContainsKey('DevKeyCriada') -and $s['DevKeyCriada'] -eq '1') {
+
+    if ((Get-StateFlag 'DevKeyCriada') -eq '1') {
         try {
             if (Test-Path -Path $DevKey) {
                 $k = Get-Item -Path $DevKey
@@ -113,31 +155,27 @@ function Undo-Unlock {
                     Write-Log 'Desfeito: chave EdgeUpdateDev criada pelo script apagada.'
                 }
             }
+            Clear-StateFlag 'DevKeyCriada'
         } catch { $ok = $false; Write-Log "Falha ao apagar a chave EdgeUpdateDev: $_" }
     }
 
     if ($ok) {
-        Remove-Item -LiteralPath $StateFile -Force -ErrorAction SilentlyContinue
-        if ((Test-Path -LiteralPath $StateDir) -and -not (Get-ChildItem -LiteralPath $StateDir -Force)) {
-            Remove-Item -LiteralPath $StateDir -Force -ErrorAction SilentlyContinue
-        }
-    } else {
-        Say "Aviso: nem tudo foi desfeito. Rode o remover-edge.bat de novo depois." 'Yellow'
+        try {
+            $k = Get-Item -Path $StateKey
+            if ($k.ValueCount -eq 0 -and $k.SubKeyCount -eq 0) { Remove-Item -Path $StateKey -Force }
+        } catch { Write-Log "Nao deu para apagar a chave de estado: $_" }
     }
+    return $ok
 }
 
 function Set-Unlock {
-    $state = @{ StubArquivoCriado = '0'; StubPastaCriada = '0'; AllowUninstallCriado = '0'; DevKeyCriada = '0' }
-    Save-State $state
-
     # 1) AllowUninstall (texto vazio), so se ainda nao existir.
     if (-not (Test-Path -Path $DevKey)) {
-        $state['DevKeyCriada'] = '1'; Save-State $state
+        Set-StateFlag 'DevKeyCriada' '1'
         New-Item -Path $DevKey -Force | Out-Null
     }
-    $existing = Get-ItemProperty -Path $DevKey -Name 'AllowUninstall' -ErrorAction SilentlyContinue
-    if ($null -eq $existing) {
-        $state['AllowUninstallCriado'] = '1'; Save-State $state
+    if ($null -eq (Get-ItemProperty -Path $DevKey -Name 'AllowUninstall' -ErrorAction SilentlyContinue)) {
+        Set-StateFlag 'AllowUninstallCriado' '1'
         New-ItemProperty -Path $DevKey -Name 'AllowUninstall' -Value '' -PropertyType String -Force | Out-Null
         Write-Log 'Destravamento: AllowUninstall criado.'
     } else {
@@ -146,11 +184,11 @@ function Set-Unlock {
 
     # 2) Arquivo vazio do Edge antigo, so se ainda nao existir.
     if (-not (Test-Path -LiteralPath $StubDir)) {
-        $state['StubPastaCriada'] = '1'; Save-State $state
+        Set-StateFlag 'StubPastaCriada' '1'
         New-Item -ItemType Directory -Path $StubDir -Force | Out-Null
     }
     if (-not (Test-Path -LiteralPath $StubFile)) {
-        $state['StubArquivoCriado'] = '1'; Save-State $state
+        Set-StateFlag 'StubArquivoCriado' '1'
         New-Item -ItemType File -Path $StubFile -Force | Out-Null
         Write-Log 'Destravamento: arquivo vazio MicrosoftEdge.exe criado.'
     } else {
@@ -159,12 +197,14 @@ function Set-Unlock {
 }
 
 # ---------------------------------------------------------------------
-# Desinstalador da Microsoft
+# Desinstaladores
 # ---------------------------------------------------------------------
 function Test-SafeUninstaller([hashtable]$U) {
-    # Trava de seguranca: so aceita o setup.exe do NAVEGADOR, nunca o do WebView2.
+    # Trava de seguranca: so aceita o setup.exe do NAVEGADOR, em modo de
+    # desinstalacao, e nunca o do WebView2.
     if ($null -eq $U) { return $false }
-    if ($U.Exe -notmatch '\\Microsoft\\Edge\\Application\\') { return $false }
+    if ($U.Exe -notmatch '\\Microsoft\\Edge\\Application\\\d+(\.\d+){3}\\Installer\\setup\.exe$') { return $false }
+    if ($U.Args -notmatch '(^|\s)--uninstall(\s|$)') { return $false }
     if ($U.Exe -match 'EdgeWebView' -or $U.Args -match 'msedgewebview') { return $false }
     return (Test-Path -LiteralPath $U.Exe)
 }
@@ -197,7 +237,29 @@ function Get-EdgeUninstaller {
     return $null
 }
 
+# Edge instalado como MSI (por exemplo, reinstalado pelo winget).
+function Get-EdgeMsiCodes {
+    $codes = @()
+    foreach ($base in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+                        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')) {
+        foreach ($k in @(Get-ChildItem -Path $base -ErrorAction SilentlyContinue)) {
+            if ($k.PSChildName -notmatch '^\{[0-9A-Fa-f-]{36}\}$') { continue }
+            $name = [string]$k.GetValue('DisplayName')
+            $us   = [string]$k.GetValue('UninstallString')
+            if ($name -eq 'Microsoft Edge' -and $us -match 'MsiExec') { $codes += $k.PSChildName }
+        }
+    }
+    return $codes
+}
+
 function Invoke-EdgeUninstall {
+    foreach ($code in @(Get-EdgeMsiCodes)) {
+        Write-Log "Edge registrado como MSI: $code. Rodando msiexec /X."
+        $m = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList "/qn /X$code REBOOT=ReallySuppress /norestart" -Wait -PassThru
+        Write-Log "msiexec /X $code -> $($m.ExitCode)"
+    }
+    if (-not (Get-EdgeExe)) { return 0 }
+
     $u = Get-EdgeUninstaller
     if ($null -eq $u) { Say 'Nao encontrei o desinstalador do Edge.' 'Red'; return $null }
     Write-Log "Rodando: `"$($u.Exe)`" $($u.Args)"
@@ -239,23 +301,20 @@ function Remove-EdgeShortcuts {
 # Ponto de restauracao
 # ---------------------------------------------------------------------
 function New-RestorePointChecked {
-    $srKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
     $before = @(Get-ComputerRestorePoint -ErrorAction SilentlyContinue | ForEach-Object { $_.SequenceNumber })
-    $oldProp = Get-ItemProperty -Path $srKey -Name 'SystemRestorePointCreationFrequency' -ErrorAction SilentlyContinue
+    $oldProp = Get-ItemProperty -Path $SrKey -Name 'SystemRestorePointCreationFrequency' -ErrorAction SilentlyContinue
+    $old = 'ausente'
+    if ($null -ne $oldProp) { $old = [string]$oldProp.SystemRestorePointCreationFrequency }
     try {
         # O Windows so cria 1 ponto a cada 24 h; libera so durante esta criacao.
-        Set-ItemProperty -Path $srKey -Name 'SystemRestorePointCreationFrequency' -Value 0 -Type DWord
+        # O valor original e anotado antes, para ser devolvido mesmo se a janela fechar.
+        Set-StateFlag 'FrequenciaOriginal' $old
+        Set-ItemProperty -Path $SrKey -Name 'SystemRestorePointCreationFrequency' -Value 0 -Type DWord
         Checkpoint-Computer -Description $RestoreDesc -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
     } catch {
         Write-Log "Checkpoint-Computer falhou: $_"
     } finally {
-        try {
-            if ($null -eq $oldProp) {
-                Remove-ItemProperty -Path $srKey -Name 'SystemRestorePointCreationFrequency' -ErrorAction SilentlyContinue
-            } else {
-                Set-ItemProperty -Path $srKey -Name 'SystemRestorePointCreationFrequency' -Value $oldProp.SystemRestorePointCreationFrequency -Type DWord
-            }
-        } catch { Write-Log "Nao deu para restaurar SystemRestorePointCreationFrequency: $_" }
+        $null = Undo-Unlock
     }
     $after = @(Get-ComputerRestorePoint -ErrorAction SilentlyContinue | ForEach-Object { $_.SequenceNumber })
     $new = @($after | Where-Object { $before -notcontains $_ })
@@ -263,20 +322,22 @@ function New-RestorePointChecked {
 }
 
 function Confirm-RestorePoint {
-    Say 'Criando ponto de restauracao (pode levar alguns minutos)...'
+    Say 'Criando ponto de restauracao (pode levar alguns minutos; nao feche a janela)...'
     if (New-RestorePointChecked) { Say "Ponto de restauracao criado: '$RestoreDesc'." 'Green'; return $true }
 
     Say 'Nao foi possivel criar o ponto de restauracao.' 'Yellow'
     Say 'Normalmente e porque a "Protecao do Sistema" do Windows esta desligada.' 'Yellow'
     while ($true) {
-        $r = (Read-Host 'Digite A para ativar a Protecao do Sistema e tentar de novo, C para continuar SEM ponto, ou S para sair').Trim().ToUpper()
+        $r = [string](Read-Host 'Digite A para ativar a Protecao do Sistema e tentar de novo, C para continuar SEM ponto, ou S para sair')
+        $r = $r.Trim().ToUpper()
         Write-Log "Resposta: $r"
         if ($r -eq 'A') {
             try {
                 Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction Stop
-                Write-Log "Protecao do Sistema ativada em $env:SystemDrive."
+                Write-Log "Protecao do Sistema ativada em $env:SystemDrive (por escolha do usuario)."
                 Start-Sleep -Seconds 5
             } catch { Say "Nao deu para ativar a Protecao do Sistema: $_" 'Yellow'; continue }
+            Say 'Criando ponto de restauracao...'
             if (New-RestorePointChecked) { Say "Ponto de restauracao criado: '$RestoreDesc'." 'Green'; return $true }
             Say 'Ainda nao foi possivel criar o ponto de restauracao.' 'Yellow'
         } elseif ($r -eq 'C') {
@@ -294,14 +355,14 @@ function Confirm-RestorePoint {
 Write-Log '===================================================='
 Write-Log "Inicio. Parametro Recuperar=$Recuperar"
 
-# Sempre desfaz restos de uma execucao anterior interrompida.
-Undo-Unlock
-if ($Recuperar) { Write-Log 'Modo recuperar: concluido.'; exit 0 }
-
-Write-Host ''
-Write-Host '  Remover o Microsoft Edge (mantendo o WebView2)' -ForegroundColor Cyan
-Write-Host '  ==============================================' -ForegroundColor Cyan
-Write-Host ''
+# Uma execucao por vez (duas janelas ao mesmo tempo atrapalhariam o estado).
+$script:Trava = New-Object System.Threading.Mutex($false, 'Global\RemoverEdge')
+$temTrava = $false
+try { $temTrava = $script:Trava.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $temTrava = $true }
+if (-not $temTrava) {
+    Write-Host 'O remover-edge ja esta aberto em outra janela. Use so aquela e feche esta.' -ForegroundColor Yellow
+    exit 1
+}
 
 # --- Checagens ---------------------------------------------------------
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -312,6 +373,23 @@ if (-not [Environment]::Is64BitOperatingSystem -or $env:PROCESSOR_ARCHITECTURE -
     Say 'Este script so foi feito para Windows 64 bits em processador Intel/AMD.' 'Red'; exit 1
 }
 
+# Sempre desfaz restos de uma execucao anterior interrompida.
+$limpezaOk = Undo-Unlock
+if ($Recuperar) {
+    Write-Log "Modo recuperar: concluido (ok=$limpezaOk)."
+    if ($limpezaOk) { exit 0 } else { exit 1 }
+}
+if (-not $limpezaOk) {
+    Say 'Restos de uma execucao anterior nao puderam ser desfeitos.' 'Red'
+    Say 'Reinicie o PC e rode o remover-edge.bat de novo.' 'Red'
+    exit 1
+}
+
+Write-Host ''
+Write-Host '  Remover o Microsoft Edge (mantendo o WebView2)' -ForegroundColor Cyan
+Write-Host '  ==============================================' -ForegroundColor Cyan
+Write-Host ''
+
 $cv = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue
 if ($null -ne $cv) {
     $disp = ''
@@ -321,7 +399,8 @@ if ($null -ne $cv) {
 
 $edgeExe = Get-EdgeExe
 if (-not $edgeExe) {
-    Say 'O navegador Edge nao foi encontrado neste PC. Nada a fazer.' 'Green'
+    Say 'O navegador Edge nao foi encontrado neste PC. Nada a remover.' 'Green'
+    Remove-EdgeShortcuts
     exit 0
 }
 Write-Log "Edge encontrado: $edgeExe"
@@ -343,15 +422,18 @@ Write-Host '  - criar um ponto de restauracao do Windows;'
 Write-Host '  - fechar o Edge e rodar o desinstalador da propria Microsoft;'
 Write-Host '  - manter o WebView2 e o atualizador dele (outros programas precisam).'
 Write-Host ''
-$r = (Read-Host 'Digite S e aperte Enter para continuar (qualquer outra coisa cancela)').Trim().ToUpper()
+$r = [string](Read-Host 'Digite S e aperte Enter para continuar (qualquer outra coisa cancela)')
+$r = $r.Trim().ToUpper()
 Write-Log "Confirmacao: $r"
 if ($r -ne 'S') { Say 'Cancelado. Nada foi alterado.' 'Yellow'; exit 0 }
 
 # --- Ponto de restauracao ---------------------------------------------
-if (-not (Confirm-RestorePoint)) { Say 'Cancelado. Nada foi alterado.' 'Yellow'; exit 0 }
+if (-not (Confirm-RestorePoint)) { Say 'Cancelado. O Edge nao foi mexido.' 'Yellow'; exit 0 }
 
 # --- Desinstalacao -----------------------------------------------------
 $exitCode = $null
+$erroInterno = $null
+$undoOk = $true
 try {
     Say 'Fechando o Edge...'
     Get-Process -Name 'msedge' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -361,29 +443,46 @@ try {
     Set-Unlock
 
     Get-Process -Name 'msedge' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    Say 'Rodando o desinstalador da Microsoft (pode levar 1 ou 2 minutos)...'
+    Say 'Rodando o desinstalador da Microsoft (pode levar 1 ou 2 minutos; nao feche a janela)...'
     $exitCode = Invoke-EdgeUninstall
     Start-Sleep -Seconds 3
 } catch {
+    $erroInterno = "$_"
     Say "Erro durante a desinstalacao: $_" 'Red'
 } finally {
     Say 'Desfazendo os destravamentos temporarios...'
-    Undo-Unlock
+    $undoOk = Undo-Unlock
 }
 
 # --- Resultado ---------------------------------------------------------
 $removed = -not (Get-EdgeExe)
+$naoUse = 'NAO use outros removedores de Edge da internet: varios apagam o WebView2 ou travam o Windows Update.'
 Write-Host ''
 if ($removed) {
     Say 'Pronto: o navegador Microsoft Edge foi removido.' 'Green'
     Remove-EdgeShortcuts
 } elseif ($exitCode -eq 93) {
     Say 'A Microsoft bloqueou a remocao nesta versao do Windows (codigo 93).' 'Yellow'
-    Say 'Nada foi alterado: os destravamentos ja foram desfeitos e o Edge continua instalado.' 'Yellow'
-    Say 'Veja no LEIAME.md o que da para fazer nesse caso.' 'Yellow'
+    if ($undoOk) {
+        Say 'O Edge continua instalado e os destravamentos ja foram desfeitos.' 'Yellow'
+    } else {
+        Say 'O Edge continua instalado, mas nem tudo foi desfeito: rode o remover-edge.bat de novo' 'Yellow'
+        Say '(ele limpa os restos logo no comeco; depois e so digitar N para sair).' 'Yellow'
+    }
+    Say 'Veja no LEIAME.md (abra com o Bloco de Notas) a secao "Se nao der certo".' 'Yellow'
+    Say $naoUse 'Yellow'
+} elseif ($erroInterno -or $null -eq $exitCode) {
+    Say 'O desinstalador da Microsoft nao chegou a rodar; nada foi removido.' 'Yellow'
+    Say 'Veja no LEIAME.md (abra com o Bloco de Notas) a secao "Se nao der certo".' 'Yellow'
+    Say $naoUse 'Yellow'
+} elseif ($exitCode -eq 19 -or $exitCode -eq 29) {
+    Say "O desinstalador terminou (codigo $exitCode), mas alguns arquivos so serao apagados depois de reiniciar." 'Yellow'
+    Say 'Reinicie o PC e rode o remover-edge.bat UMA vez para conferir.' 'Yellow'
 } else {
     Say "Nao deu para confirmar a remocao (codigo $exitCode)." 'Yellow'
-    Say 'Reinicie o PC e rode o remover-edge.bat de novo para conferir.' 'Yellow'
+    Say 'Reinicie o PC e rode o remover-edge.bat UMA vez para conferir.' 'Yellow'
+    Say 'Se o Edge continuar instalado, siga a secao "Se nao der certo" do LEIAME.md.' 'Yellow'
+    Say $naoUse 'Yellow'
 }
 
 # --- Conferencia do WebView2 ------------------------------------------
@@ -391,12 +490,12 @@ $wvAfter = Get-WebView2Version
 if ($wvAfter) {
     Say "WebView2 continua instalado (versao $wvAfter)." 'Green'
 } elseif ($wvBefore) {
-    Say 'ATENCAO: o WebView2 sumiu. Veja no LEIAME.md como reinstalar.' 'Red'
+    Say 'ATENCAO: o WebView2 sumiu. Veja no LEIAME.md (abra com o Bloco de Notas) como reinstalar.' 'Red'
 }
 if (Get-Service -Name 'edgeupdate' -ErrorAction SilentlyContinue) {
     Write-Log 'Servico edgeupdate (atualizador do WebView2) continua presente.'
 }
 
 Write-Host ''
-Say "Registro completo salvo em: $LogFile"
+Say "Registro completo salvo em: $script:LogFile"
 if ($removed) { Say 'Recomendado: reinicie o PC.' 'Cyan' }
