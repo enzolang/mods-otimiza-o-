@@ -42,7 +42,12 @@ echo  ===========================
 echo.
 
 rem Desfaz restos de uma remocao interrompida, se houver.
-if exist "%~dp0remover-edge.ps1" "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0remover-edge.ps1" -Recuperar
+if not exist "%~dp0remover-edge.ps1" goto :verifica
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0remover-edge.ps1" -Recuperar
+if errorlevel 3 goto :outra_janela
+if errorlevel 1 echo  Aviso: restos de uma remocao anterior nao puderam ser desfeitos. Depois, reinicie o PC, rode o remover-edge.bat e digite N.
+
+:verifica
 
 if exist "%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe" goto :ja_instalado
 
@@ -63,6 +68,12 @@ goto :fim
 
 :ja_instalado
 echo  O Microsoft Edge ja esta instalado neste PC. Nada a fazer.
+goto :fim
+
+:outra_janela
+echo.
+echo  O remover-edge esta aberto em outra janela. Feche aquela janela
+echo  e rode o reinstalar-edge.bat de novo.
 goto :fim
 
 :sem_winget

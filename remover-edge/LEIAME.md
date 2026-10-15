@@ -1,6 +1,6 @@
 # Remover o Microsoft Edge (mantendo o WebView2)
 
-Feito para: **Windows 10 ou 11 de 64 bits**, PC no Brasil, com o **Firefox** como navegador.
+Feito para: **Windows 10 ou 11 de 64 bits, com processador Intel ou AMD** (não serve para PCs com processador ARM, como os notebooks Snapdragon), PC no Brasil, com o **Firefox** como navegador.
 
 ## Antes de tudo: o que esperar
 
@@ -46,8 +46,10 @@ A Steam e os jogos não dependem do Edge.
 6. No final aparece uma destas mensagens (o script escreve sem acentos):
    - **"Pronto: o navegador Microsoft Edge foi removido."** Reinicie o PC.
    - **"A Microsoft bloqueou a remocao nesta versao do Windows (codigo 93)."** O Edge continua como estava; veja a seção "Se não der certo".
-   - **"O desinstalador terminou (codigo 19 ou 29)..."** Reinicie o PC e rode o `remover-edge.bat` mais **uma** vez para conferir.
+   - **"O desinstalador terminou (codigo 19), mas alguns arquivos so serao apagados depois de reiniciar."** (pode aparecer código 29): reinicie o PC e rode o `remover-edge.bat` mais **uma** vez para conferir.
    - **"Nao deu para confirmar a remocao"** ou **"O desinstalador da Microsoft nao chegou a rodar"**: reinicie o PC e rode mais **uma** vez. Se a mensagem se repetir, **não insista**: siga a seção "Se não der certo" e me mande o arquivo de registro.
+
+Ao rodar de novo para conferir: se aparecer **"O navegador Edge nao foi encontrado neste PC. Nada a remover."**, deu certo. Se o script pedir para digitar S, o Edge ainda está instalado; digite S para tentar mais uma vez.
 
 Tudo o que o script fez fica registrado no arquivo **`RemoverEdge-log.txt`**, na sua Área de Trabalho. Se o antivírus bloquear a Área de Trabalho, o arquivo vai para `C:\ProgramData`. O caminho certo aparece no fim da tela.
 
@@ -79,12 +81,12 @@ Os nomes das opções podem variar um pouco conforme a versão do Edge.
 | O Edge voltou sozinho | Foi uma atualização grande do Windows. Rode o `remover-edge.bat` de novo. |
 | Um programa reclama que falta o WebView2 | Clique com o botão direito no botão Iniciar → **Terminal (Admin)** (no Windows 10: **Windows PowerShell (Admin)**) e rode `winget install --id Microsoft.EdgeWebView2Runtime -e`, ou baixe em https://developer.microsoft.com/microsoft-edge/webview2/consumer/ |
 | A pesquisa do menu Iniciar não abre resultados da internet | É esperado sem o Edge. Pesquise direto no Firefox. |
-| A janela fechou no meio | Rode o `remover-edge.bat` de novo. Antes de qualquer outra coisa, ele desfaz sozinho o que ficou pela metade. Depois, se não quiser continuar, é só digitar qualquer coisa diferente de S. |
+| A janela fechou no meio | Rode o `remover-edge.bat` de novo. Antes de qualquer outra coisa, ele desfaz sozinho o que ficou pela metade. Depois, se não quiser continuar, é só digitar qualquer coisa diferente de S. Se aparecer "Restos de uma execucao anterior nao puderam ser desfeitos", reinicie o PC e rode de novo; se a mensagem continuar, pare e me mande o arquivo `RemoverEdge-log.txt`. |
 | "O remover-edge ja esta aberto em outra janela" | Você abriu duas vezes. Use só a primeira janela. |
 
 ## O que o script faz, tecnicamente
 
-1. Confere se tem permissão de administrador, se o Windows é de 64 bits e se só uma janela dele está aberta.
+1. Confere se tem permissão de administrador, se o Windows é de 64 bits num processador Intel/AMD e se só uma janela dele está aberta.
 2. Desfaz restos de uma execução anterior interrompida, se houver.
 3. Anota a versão do WebView2 para conferir no final.
 4. Cria o ponto de restauração. Para isso, zera por alguns instantes o valor `SystemRestorePointCreationFrequency` em `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore` (senão o Windows só cria 1 ponto a cada 24 h) e depois devolve o valor original. Se você escolher **A**, a Proteção do Sistema do disco do Windows fica ligada.
@@ -93,10 +95,10 @@ Os nomes das opções podem variar um pouco conforme a versão do Edge.
    - o valor `AllowUninstall` em `HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdateDev`, só se ele ainda não existir;
    - um arquivo vazio `MicrosoftEdge.exe` em `C:\Windows\SystemApps\Microsoft.MicrosoftEdge_8wekyb3d8bbwe`, só se ele ainda não existir.
 
-   Cada mudança temporária (inclusive a do item 4) é anotada **antes** de ser feita na chave `HKLM\SOFTWARE\RemoverEdge`, para poder ser desfeita mesmo se a janela fechar.
+   Cada mudança temporária (inclusive a do item 4) é anotada na chave `HKLM\SOFTWARE\RemoverEdge` **antes** de ser feita, para poder ser desfeita mesmo se a janela fechar.
 7. Se o Edge foi instalado como MSI (por exemplo, reinstalado pelo winget), remove esse registro com o `msiexec`.
 8. Roda o desinstalador oficial do Edge (`setup.exe --uninstall ... --force-uninstall`), com uma trava que só aceita o `setup.exe` do navegador e nunca o do WebView2.
-9. **Sempre** desfaz os destravamentos, dando certo ou não. O arquivo vazio só é apagado se ainda estiver vazio.
+9. **Sempre** tenta desfazer os destravamentos, dando certo ou não. Se algo não puder ser desfeito, continua anotado e é desfeito na próxima vez que o `remover-edge.bat` ou o `reinstalar-edge.bat` rodar. O arquivo vazio só é apagado se ainda estiver vazio.
 10. Se o Edge foi removido, apaga os atalhos dele e a inicialização automática.
 11. Confere se o WebView2 continua instalado.
 

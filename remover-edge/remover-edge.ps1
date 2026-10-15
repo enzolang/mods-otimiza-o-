@@ -35,6 +35,7 @@ $StubDir     = Join-Path $env:SystemRoot 'SystemApps\Microsoft.MicrosoftEdge_8we
 $StubFile    = Join-Path $StubDir 'MicrosoftEdge.exe'
 $StateKey    = 'HKLM:\SOFTWARE\RemoverEdge'
 $Desktop     = [Environment]::GetFolderPath('Desktop')
+if (-not $Desktop) { $Desktop = $env:ProgramData }
 $script:LogFile = Join-Path $Desktop 'RemoverEdge-log.txt'
 $RestoreDesc = 'Antes de remover o Microsoft Edge'
 
@@ -126,7 +127,9 @@ function Undo-Unlock {
     }
 
     # Pasta: so apaga se foi criada pelo script e esta vazia.
-    if ((Get-StateFlag 'StubPastaCriada') -eq '1') {
+    if ((Get-StateFlag 'StubPastaCriada') -eq '1' -and $null -ne (Get-StateFlag 'StubArquivoCriado')) {
+        $ok = $false   # o arquivo vazio ainda nao saiu; a pasta fica anotada para a proxima vez
+    } elseif ((Get-StateFlag 'StubPastaCriada') -eq '1') {
         try {
             if ((Test-Path -LiteralPath $StubDir) -and -not (Get-ChildItem -LiteralPath $StubDir -Force)) {
                 Remove-Item -LiteralPath $StubDir -Force
@@ -146,7 +149,9 @@ function Undo-Unlock {
         } catch { $ok = $false; Write-Log "Falha ao apagar AllowUninstall: $_" }
     }
 
-    if ((Get-StateFlag 'DevKeyCriada') -eq '1') {
+    if ((Get-StateFlag 'DevKeyCriada') -eq '1' -and $null -ne (Get-StateFlag 'AllowUninstallCriado')) {
+        $ok = $false   # AllowUninstall ainda nao saiu; a chave fica anotada para a proxima vez
+    } elseif ((Get-StateFlag 'DevKeyCriada') -eq '1') {
         try {
             if (Test-Path -Path $DevKey) {
                 $k = Get-Item -Path $DevKey
@@ -308,7 +313,7 @@ function New-RestorePointChecked {
     try {
         # O Windows so cria 1 ponto a cada 24 h; libera so durante esta criacao.
         # O valor original e anotado antes, para ser devolvido mesmo se a janela fechar.
-        Set-StateFlag 'FrequenciaOriginal' $old
+        if ($null -eq (Get-StateFlag 'FrequenciaOriginal')) { Set-StateFlag 'FrequenciaOriginal' $old }
         Set-ItemProperty -Path $SrKey -Name 'SystemRestorePointCreationFrequency' -Value 0 -Type DWord
         Checkpoint-Computer -Description $RestoreDesc -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
     } catch {
@@ -361,7 +366,7 @@ $temTrava = $false
 try { $temTrava = $script:Trava.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $temTrava = $true }
 if (-not $temTrava) {
     Write-Host 'O remover-edge ja esta aberto em outra janela. Use so aquela e feche esta.' -ForegroundColor Yellow
-    exit 1
+    exit 3
 }
 
 # --- Checagens ---------------------------------------------------------
@@ -428,7 +433,7 @@ Write-Log "Confirmacao: $r"
 if ($r -ne 'S') { Say 'Cancelado. Nada foi alterado.' 'Yellow'; exit 0 }
 
 # --- Ponto de restauracao ---------------------------------------------
-if (-not (Confirm-RestorePoint)) { Say 'Cancelado. O Edge nao foi mexido.' 'Yellow'; exit 0 }
+if (-not (Confirm-RestorePoint)) { $null = Undo-Unlock; Say 'Cancelado. O Edge nao foi mexido.' 'Yellow'; exit 0 }
 
 # --- Desinstalacao -----------------------------------------------------
 $exitCode = $null
@@ -481,8 +486,13 @@ if ($removed) {
 } else {
     Say "Nao deu para confirmar a remocao (codigo $exitCode)." 'Yellow'
     Say 'Reinicie o PC e rode o remover-edge.bat UMA vez para conferir.' 'Yellow'
-    Say 'Se o Edge continuar instalado, siga a secao "Se nao der certo" do LEIAME.md.' 'Yellow'
+    Say 'Se o Edge continuar instalado, siga a secao "Se nao der certo" do LEIAME.md (abra com o Bloco de Notas).' 'Yellow'
     Say $naoUse 'Yellow'
+}
+
+if (-not $undoOk -and ($removed -or $exitCode -ne 93)) {
+    Say 'Aviso: nem todos os destravamentos temporarios foram desfeitos.' 'Yellow'
+    Say 'Reinicie o PC e rode o remover-edge.bat mais uma vez: ele limpa os restos logo no comeco.' 'Yellow'
 }
 
 # --- Conferencia do WebView2 ------------------------------------------
