@@ -1,0 +1,4 @@
+# Arquivos para Windows: manter CRLF exatamente como estao.
+*.bat -text
+*.cmd -text
+*.ini -text
