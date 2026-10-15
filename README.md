@@ -7,6 +7,12 @@ Pacotes para melhorar o desempenho de jogos no PC. Cada jogo tem a própria past
 | Silent Hill 2 (Remake, 2024) | [`silent-hill-2-remake/`](silent-hill-2-remake/) | Travadas (*stutter*) ao andar pela cidade e guia de configurações para ganhar FPS |
 | Silent Hill: Townfall (2026) | [`silent-hill-townfall/`](silent-hill-townfall/) | Guia de configurações para ganhar FPS, ajustes de VRAM e memória, e teste para saber se o jogo lê o `Engine.ini` |
 
+## Windows
+
+| Pacote | Pasta | O que faz |
+|---|---|---|
+| Remover o Microsoft Edge | [`remover-edge/`](remover-edge/) | Remove o navegador Edge com o desinstalador da própria Microsoft, mantendo o WebView2, com ponto de restauração e opção de reinstalar |
+
 ## Antes de usar qualquer pacote
 
 - Leia o `LEIAME.md` da pasta do jogo.
